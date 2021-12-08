@@ -8,8 +8,6 @@
 #include "esp_event.h"
 #include "esp_netif.h"
 #include "protocol_examples_common.h"
-//#include "protocol_examples_common.h"
-
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
@@ -21,6 +19,7 @@
 
 #include "esp_log.h"
 #include "mqtt_client.h"
+#include "DHT22.h"
 
 #define CONFIG_BROKER_URL "mqtt://broker.hivemq.com"
 
@@ -28,8 +27,11 @@ static const char *TAG = "MQTT";
 static const char *APP_TAG = "ESP_AQI";
 int msg_id;
 
-esp_mqtt_client_handle_t mqtt_client;
-TaskHandle_t publish_message_handler;
+esp_mqtt_client_handle_t mqtt_client = NULL;
+TaskHandle_t publishMessageHandle = NULL;
+TaskHandle_t dhtTaskHandle = NULL;
+
+QueueHandle_t queue1; // store dht22 data
 
 static void log_error_if_nonzero(const char *message, int error_code)
 {
@@ -39,13 +41,49 @@ static void log_error_if_nonzero(const char *message, int error_code)
     }
 }
 
-static void publish_message_task(void *args)
+static void recv_dht22_data(void* arg)
 {
-    vTaskSuspend(NULL);
+    char txbuff[50];
+    queue1 = xQueueCreate(5, sizeof(txbuff));
+    if (queue1 == 0)
+    {
+        printf("failed to create queue1 = %p \n", queue1);
+    }
+
+    setDHTgpio(4);
+    int ret = 0;
     while (1)
     {
-        char* buff[1024];
-        msg_id = esp_mqtt_client_publish(mqtt_client, "/topic/qos1", "Hello world", 0, 1, 0);
+        ret = readDHT();
+        errorHandler(ret);
+        sprintf(txbuff, "templature: %.1f,\nhumitidy: %.1f,", getTemperature(), getHumidity());
+        
+        if (xQueueSend(queue1, (void*)txbuff, (TickType_t)0) != 1)
+        {
+            printf("could not sended this message = %s \n", txbuff);
+        }
+        vTaskDelay(pdMS_TO_TICKS(3000));
+    }
+    
+}
+
+
+/* Publish message to broker
+*
+*/
+static void publish_message_task(void *args)
+{
+    char rxbuff[50];
+    char buff[1024];
+    while (1)
+    {
+        
+         if (xQueueReceive(queue1, &(rxbuff), (TickType_t)5))
+        {
+            printf("got a data from queue1 === %s \n", rxbuff);
+        }
+        sprintf(buff, "{\n%s\n}", rxbuff);
+        msg_id = esp_mqtt_client_publish(mqtt_client, "/topic/qos1", buff, 0, 1, 0);
         vTaskDelay(3000 / portTICK_PERIOD_MS);
     }
 }
@@ -61,11 +99,11 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
     {
     case MQTT_EVENT_CONNECTED:
         ESP_LOGI(TAG, "MQTT_EVENT_CONNECTED");
-        vTaskResume(publish_message_handler);
         break;
     case MQTT_EVENT_DISCONNECTED:
         ESP_LOGI(TAG, "MQTT_EVENT_DISCONNECTED");
-        vTaskSuspend(publish_message_handler);
+        vTaskSuspend(publishMessageHandle);
+        vTaskSuspend(dhtTaskHandle);
         break;
     case MQTT_EVENT_PUBLISHED:
         ESP_LOGI(TAG, "MQTT_EVENT_PUBLISHED, msg_id=%d", event->msg_id);
@@ -130,5 +168,7 @@ void app_main(void)
     ESP_ERROR_CHECK(example_connect());
     mqtt_app_start();
 
-    xTaskCreate(publish_message_task, "publish message", 4096, NULL, 10, &publish_message_handler);
+    xTaskCreate(recv_dht22_data, "dht data task", 4096, NULL, 10, &dhtTaskHandle);
+    xTaskCreate(publish_message_task, "publish message", 4096, NULL, 10, &publishMessageHandle);
+
 }
