@@ -19,26 +19,141 @@
 
 #include "esp_log.h"
 #include "mqtt_client.h"
+#include "driver/gpio.h"
 #include "DHT22.h"
+#include "time_sync.h"
+#include "MQ135.h"
+#include "dust_sensor.h"
 
-#define CONFIG_BROKER_URL "mqtt://broker.hivemq.com"
+/*
+
+json format
+{
+    "deviceId": "afldakjdfklroiqjkfa",
+    "deviceType": "ESP AQI",
+    "data": {
+        "temperature": "30.5",
+        "humidity": "60.5",
+        "co2": "1200",
+        "co": "200",
+        "pm25": "40",
+        "pm10": "20",
+    },
+}
+
+*/
 
 static const char *TAG = "MQTT";
 static const char *APP_TAG = "ESP_AQI";
-int msg_id;
+static const char *TIME_TAG = "TIME";
+static const char *deviceId = "3e31d3bd-e0a6-4497-8b48-cef5c6f3547b";
+static const char *deviceType = "ESP AQI";
+static const char *latitude = "21.027763";
+static const char *longitude = "105.834160";
+static char strftime_buf[64];
+static const int DelayMS = 3000;
+static int msg_id;
 
 esp_mqtt_client_handle_t mqtt_client = NULL;
 TaskHandle_t publishMessageHandle = NULL;
 TaskHandle_t dhtTaskHandle = NULL;
-
+TaskHandle_t mq135TaskHandle = NULL;
+TaskHandle_t syncTimeHandle = NULL;
+TaskHandle_t dustTaskHandle = NULL;
 QueueHandle_t queue1; // store dht22 data
+QueueHandle_t queue2; // store mq135 data
+QueueHandle_t queue3; // store dust sensor data
 
-static void log_error_if_nonzero(const char *message, int error_code)
+/**
+ * @brief sync time using Network time server
+ * 
+ * @param args 
+ */
+static void sync_time(void *args)
 {
-    if (error_code != 0)
+    time_t now;
+    struct tm timeinfo;
+    time(&now);
+        localtime_r(&now, &timeinfo);
+        // Is time set? If not, tm_year will be (1970 -1900)
+        if (timeinfo.tm_year < (2016 - 1900)) {
+            ESP_LOGI(TIME_TAG, "Time is not set yet. Connecting to Wifi and getting time over NTP");
+            obtain_time();
+            // update 'now' variable with current time
+            time(&now);
+        }
+    while (1)
     {
-        ESP_LOGE(TAG, "Last error %s: 0x%x", message, error_code);
+        // set timezone to Easten standrd time
+        setenv("TZ", "CST-7", 1);
+        tzset();
+        time(&now);
+        localtime_r(&now, &timeinfo);
+        strftime(strftime_buf, sizeof(strftime_buf), "%Y-%d-%mT%H:%M:%S", &timeinfo);
+        //strftime(strftime_buf, sizeof(strftime_buf), "%c", &timeinfo);
+        ESP_LOGI(TIME_TAG, "The current date/time in Hanoi is: %s", strftime_buf);
+        vTaskDelay(DelayMS / portTICK_PERIOD_MS);
     }
+    
+}
+
+static void read_dustsensor_data(void* args)
+{
+    char txbuff[50];
+    queue3 = xQueueCreate(5, sizeof(txbuff));
+    if (queue3 == 0)
+    {
+        ESP_LOGW("QUEUE", "failed to create queue3 = %p", queue3);
+    }
+
+    setDUSTgpio(18, 19);
+
+    float pm25data = -1, pm10data = -1;
+    sprintf(txbuff, "\"pm2_5\":%.f,\"pm10\":%.f", pm25data, pm10data);
+    if (xQueueSend(queue3, (void*)txbuff, (TickType_t)0) != 1)
+    {
+        printf("could not sended this message = %s \n", txbuff);
+    }
+
+    while (1)
+    {
+        readDustData(&pm25data, &pm10data);
+        sprintf(txbuff, "\"pm2_5\":%.f,\"pm10\":%.f", pm25data, pm10data);
+        if (xQueueSend(queue3, (void*)txbuff, (TickType_t)0) != 1)
+        {
+            printf("could not sended this message = %s \n", txbuff);
+        }
+        vTaskDelay(DelayMS/portTICK_PERIOD_MS);
+    }
+    
+}
+
+/**
+ * @brief Read data from MQ135 sensor
+ * 
+ * @param args 
+ */
+static void read_mq135_data(void* args)
+{
+    char txbuff[50];
+    queue2 = xQueueCreate(5, sizeof(txbuff));
+    if (queue2 == 0)
+    {
+        ESP_LOGW("QUEUE", "failed to create queue2 = %p", queue2);
+    }
+    config_mq135_sensor();
+    while (1)
+    {
+        read_mq135_data_callback();
+        sprintf(txbuff, "\"co2\": %.f,\"co\": %.f", get_ppm_co2(), get_ppm_co());
+        
+        if (xQueueSend(queue2, (void*)txbuff, (TickType_t)0) != 1)
+        {
+            printf("could not sended this message = %s \n", txbuff);
+        }
+        vTaskDelay(pdMS_TO_TICKS(DelayMS));
+    }
+    
 }
 
 static void recv_dht22_data(void* arg)
@@ -47,7 +162,7 @@ static void recv_dht22_data(void* arg)
     queue1 = xQueueCreate(5, sizeof(txbuff));
     if (queue1 == 0)
     {
-        printf("failed to create queue1 = %p \n", queue1);
+        ESP_LOGW("QUEUE", "failed to create queue1 = %p", queue1);
     }
 
     setDHTgpio(4);
@@ -56,38 +171,77 @@ static void recv_dht22_data(void* arg)
     {
         ret = readDHT();
         errorHandler(ret);
-        sprintf(txbuff, "templature: %.1f,\nhumitidy: %.1f,", getTemperature(), getHumidity());
+        sprintf(txbuff, "\"temperature\": %.1f,\"humidity\": %.1f", getTemperature(), getHumidity());
         
         if (xQueueSend(queue1, (void*)txbuff, (TickType_t)0) != 1)
         {
             printf("could not sended this message = %s \n", txbuff);
         }
-        vTaskDelay(pdMS_TO_TICKS(3000));
+        vTaskDelay(pdMS_TO_TICKS(DelayMS));
     }
     
 }
 
-
-/* Publish message to broker
-*
+/**
+ * @brief Subscribe message
+ * 
+ *
 */
-static void publish_message_task(void *args)
+static void process_msg_from_subscribe (char *msg) {
+    
+    if (strcmp(msg,"off")) {
+        gpio_set_level(2, 0);
+    } else if (strcmp(msg, "on")) {
+        gpio_set_level(2, 1);
+    }
+}
+
+/**
+ * @brief Publish message to broker
+ * 
+ * @param args 
+ */
+static void publish_message_task(char *args)
 {
-    char rxbuff[50];
+    char rxbuff1[50];
+    char rxbuff2[50];
+    char rxbuff3[50];
     char buff[1024];
     while (1)
     {
         
-         if (xQueueReceive(queue1, &(rxbuff), (TickType_t)5))
+        if (xQueueReceive(queue1, &(rxbuff1), (TickType_t)5))
         {
-            printf("got a data from queue1 === %s \n", rxbuff);
+            printf("got a data from queue1 === %s \n", rxbuff1);
         }
-        sprintf(buff, "{\n%s\n}", rxbuff);
+        if (xQueueReceive(queue2, &(rxbuff2), (TickType_t)5))
+        {
+            printf("got a data from queue2 === %s \n", rxbuff2);
+        }
+        if (xQueueReceive(queue3, &(rxbuff3), (TickType_t)5))
+        {
+            printf("got a data from queue3 === %s \n", rxbuff3);
+        }
+        sprintf(buff, "{\"deviceId\":\"%s\",\"deviceType\":\"%s\",\"data\":{%s,\"location\":{\"latitude\":\"%s\",\"longitude\":\"%s\"},\"time\":\"%s\",%s,%s},}", deviceId, deviceType, rxbuff1, latitude, longitude, strftime_buf, rxbuff2, rxbuff3);
         msg_id = esp_mqtt_client_publish(mqtt_client, "/topic/qos1", buff, 0, 1, 0);
-        vTaskDelay(3000 / portTICK_PERIOD_MS);
+        vTaskDelay(DelayMS / portTICK_PERIOD_MS);
     }
 }
 
+/*
+* log function from mqtt error
+*/
+static void log_error_if_nonzero(const char *message, int error_code)
+{
+    if (error_code != 0)
+    {
+        ESP_LOGE(TAG, "Last error %s: 0x%x", message, error_code);
+    }
+}
+/* handler event from mqtt
+*
+*
+*/
 static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_t event_id, void *event_data)
 {
     ESP_LOGD(TAG, "Event dispatched from event loop base=%s, event_id=%d", base, event_id);
@@ -99,6 +253,9 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
     {
     case MQTT_EVENT_CONNECTED:
         ESP_LOGI(TAG, "MQTT_EVENT_CONNECTED");
+        msg_id = esp_mqtt_client_subscribe(mqtt_client, "/topic/led/qos2", 2);
+        vTaskResume(publishMessageHandle);
+        vTaskResume(dhtTaskHandle);
         break;
     case MQTT_EVENT_DISCONNECTED:
         ESP_LOGI(TAG, "MQTT_EVENT_DISCONNECTED");
@@ -118,6 +275,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
         ESP_LOGI(TAG, "MQTT_EVENT_DATA");
         printf("TOPIC=%.*s\r\n", event->topic_len, event->topic);
         printf("DATA=%.*s\r\n", event->data_len, event->data);
+        process_msg_from_subscribe(event->data);
         break;
     case MQTT_EVENT_ERROR:
         ESP_LOGI(TAG, "MQTT_EVENT_ERROR");
@@ -164,11 +322,16 @@ void app_main(void)
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
 
+    gpio_pad_select_gpio(2);
+    gpio_set_direction(2, GPIO_MODE_OUTPUT);
+
     // Connect to wifi
     ESP_ERROR_CHECK(example_connect());
     mqtt_app_start();
 
+    xTaskCreate(sync_time, "sync time", 4096, NULL, 10, &syncTimeHandle);
     xTaskCreate(recv_dht22_data, "dht data task", 4096, NULL, 10, &dhtTaskHandle);
     xTaskCreate(publish_message_task, "publish message", 4096, NULL, 10, &publishMessageHandle);
-
+    xTaskCreate(read_mq135_data, "read mq135 data", 2048, NULL, 10, &mq135TaskHandle);
+    xTaskCreate(read_dustsensor_data, "read dust sensor data", 4096, NULL, 10, &dustTaskHandle);
 }
