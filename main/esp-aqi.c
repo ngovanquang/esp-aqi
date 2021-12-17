@@ -222,7 +222,7 @@ static void publish_message_task(char *args)
         {
             printf("got a data from queue3 === %s \n", rxbuff3);
         }
-        sprintf(buff, "{\"deviceId\":\"%s\",\"deviceType\":\"%s\",\"data\":{%s,\"location\":{\"latitude\":\"%s\",\"longitude\":\"%s\"},\"time\":\"%s\",%s,%s},}", deviceId, deviceType, rxbuff1, latitude, longitude, strftime_buf, rxbuff2, rxbuff3);
+        sprintf(buff, "{\"deviceId\":\"%s\",\"deviceType\":\"%s\",\"data\":{%s,\"location\":{\"latitude\":\"%s\",\"longitude\":\"%s\"},\"time\":\"%s\",%s,%s}}", deviceId, deviceType, rxbuff1, latitude, longitude, strftime_buf, rxbuff2, rxbuff3);
         msg_id = esp_mqtt_client_publish(mqtt_client, "/topic/qos1", buff, 0, 1, 0);
         vTaskDelay(DelayMS / portTICK_PERIOD_MS);
     }
