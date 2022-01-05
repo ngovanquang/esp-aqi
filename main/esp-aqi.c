@@ -109,7 +109,7 @@ static void read_dustsensor_data(void* args)
     setDUSTgpio(18, 19);
 
     float pm25data = -1, pm10data = -1;
-    sprintf(txbuff, "\"pm2_5\":%.f,\"pm10\":%.f", pm25data, pm10data);
+    sprintf(txbuff, "\"pm2_5\":%.1f", pm25data);
     if (xQueueSend(queue3, (void*)txbuff, (TickType_t)0) != 1)
     {
         printf("could not sended this message = %s \n", txbuff);
@@ -118,7 +118,7 @@ static void read_dustsensor_data(void* args)
     while (1)
     {
         readDustData(&pm25data, &pm10data);
-        sprintf(txbuff, "\"pm2_5\":%.f,\"pm10\":%.f", pm25data, pm10data);
+        sprintf(txbuff, "\"pm2_5\":%.1f", pm25data);
         if (xQueueSend(queue3, (void*)txbuff, (TickType_t)0) != 1)
         {
             printf("could not sended this message = %s \n", txbuff);
