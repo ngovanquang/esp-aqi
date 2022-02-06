@@ -20,7 +20,12 @@ void setDUSTgpio (int gpio_25, int gpio_10)
     PM25_GPIO = gpio_25;
     PM10_GPIO = gpio_10;
 }
-
+/**
+ * @brief Đọc dữ liệu từ cảm biến bụi min 
+ * 
+ * @param pm25 
+ * @param pm10 
+ */
 void readDustData(float *pm25, float *pm10)
 {
 	unsigned int mSec25 = 0;
@@ -44,6 +49,6 @@ void readDustData(float *pm25, float *pm10)
     if (lowRatioPM10 < 8) *pm10 = lowRatioPM10 * 100;
     else *pm10 = lowRatioPM10*150 - 400;
 
-    if (lowRatioPM25 < 8) *pm25 = lowRatioPM25 * 100;
-    else *pm25 = lowRatioPM25*150 - 400;
+    if (lowRatioPM25 < 8) *pm25 = lowRatioPM25 * 10;
+    else *pm25 = lowRatioPM25*15 - 40;
 }

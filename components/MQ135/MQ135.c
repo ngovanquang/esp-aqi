@@ -72,7 +72,7 @@ float get_ppm_co2 (void)
 
 float get_ppm_co (void)
 {
-    ppm_co = 605.18*pow(ratio, -3.937);
+    ppm_co = 605.18*pow(ratio, -3.937)/100;
     ESP_LOGI("MQ SENSOR", "C0: %f ppm", ppm_co);
     return ppm_co;
 }

@@ -42,6 +42,7 @@ json format
 }
 
 */
+#define DHT22_PIN (4)
 
 static const char *TAG = "MQTT";
 static const char *APP_TAG = "ESP_AQI";
@@ -65,7 +66,7 @@ QueueHandle_t queue2; // store mq135 data
 QueueHandle_t queue3; // store dust sensor data
 
 /**
- * @brief sync time using Network time server
+ * @brief Đồng bộ thời gian với Network time server
  * 
  * @param args 
  */
@@ -97,6 +98,11 @@ static void sync_time(void *args)
     
 }
 
+/**
+ * @brief Đọc dữ liệu từ cảm biến bụi mịn PM2.5
+ * 
+ * @param args 
+ */
 static void read_dustsensor_data(void* args)
 {
     char txbuff[50];
@@ -109,7 +115,7 @@ static void read_dustsensor_data(void* args)
     setDUSTgpio(18, 19);
 
     float pm25data = -1, pm10data = -1;
-    sprintf(txbuff, "\"pm2_5\":%.1f", pm25data);
+    sprintf(txbuff, "\"pm2_5\":%.f", pm25data);
     if (xQueueSend(queue3, (void*)txbuff, (TickType_t)0) != 1)
     {
         printf("could not sended this message = %s \n", txbuff);
@@ -118,7 +124,7 @@ static void read_dustsensor_data(void* args)
     while (1)
     {
         readDustData(&pm25data, &pm10data);
-        sprintf(txbuff, "\"pm2_5\":%.1f", pm25data);
+        sprintf(txbuff, "\"pm2_5\":%.f", pm25data);
         if (xQueueSend(queue3, (void*)txbuff, (TickType_t)0) != 1)
         {
             printf("could not sended this message = %s \n", txbuff);
@@ -129,7 +135,7 @@ static void read_dustsensor_data(void* args)
 }
 
 /**
- * @brief Read data from MQ135 sensor
+ * @brief Đọc dữ liệu từ cảm biến chất lượng không khí MQ135
  * 
  * @param args 
  */
@@ -145,7 +151,7 @@ static void read_mq135_data(void* args)
     while (1)
     {
         read_mq135_data_callback();
-        sprintf(txbuff, "\"co2\": %.f,\"co\": %.f", get_ppm_co2(), get_ppm_co());
+        sprintf(txbuff, "\"co2\":%.f,\"co\":%.f", get_ppm_co2(), get_ppm_co());
         
         if (xQueueSend(queue2, (void*)txbuff, (TickType_t)0) != 1)
         {
@@ -156,6 +162,11 @@ static void read_mq135_data(void* args)
     
 }
 
+/**
+ * @brief Đọc dữ liệu từ cảm biến nhiệt độ độ ẩm DHT22
+ * 
+ * @param arg 
+ */
 static void recv_dht22_data(void* arg)
 {
     char txbuff[50];
@@ -165,13 +176,13 @@ static void recv_dht22_data(void* arg)
         ESP_LOGW("QUEUE", "failed to create queue1 = %p", queue1);
     }
 
-    setDHTgpio(4);
+    setDHTgpio(DHT22_PIN);
     int ret = 0;
     while (1)
     {
         ret = readDHT();
         errorHandler(ret);
-        sprintf(txbuff, "\"temperature\": %.1f,\"humidity\": %.1f", getTemperature(), getHumidity());
+        sprintf(txbuff, "\"temperature\":%.1f,\"humidity\":%.1f", getTemperature(), getHumidity());
         
         if (xQueueSend(queue1, (void*)txbuff, (TickType_t)0) != 1)
         {
@@ -183,12 +194,12 @@ static void recv_dht22_data(void* arg)
 }
 
 /**
- * @brief Subscribe message
+ * @brief xử lý dữ liệu nhận được từ client
  * 
  *
 */
 static void process_msg_from_subscribe (char *msg) {
-    
+    // bật tắt đèn
     if (strcmp(msg,"off")) {
         gpio_set_level(2, 0);
     } else if (strcmp(msg, "on")) {
@@ -197,7 +208,7 @@ static void process_msg_from_subscribe (char *msg) {
 }
 
 /**
- * @brief Publish message to broker
+ * @brief Gửi gói tin lên Broker
  * 
  * @param args 
  */
@@ -209,21 +220,25 @@ static void publish_message_task(char *args)
     char buff[1024];
     while (1)
     {
-        
+        // DHT22 data
         if (xQueueReceive(queue1, &(rxbuff1), (TickType_t)5))
         {
             printf("got a data from queue1 === %s \n", rxbuff1);
         }
+        // MQ135 data
         if (xQueueReceive(queue2, &(rxbuff2), (TickType_t)5))
         {
             printf("got a data from queue2 === %s \n", rxbuff2);
         }
+        // Dust sensor data
         if (xQueueReceive(queue3, &(rxbuff3), (TickType_t)5))
         {
             printf("got a data from queue3 === %s \n", rxbuff3);
         }
+        // Dữ liệu gửi đi
         sprintf(buff, "{\"deviceId\":\"%s\",\"deviceType\":\"%s\",\"data\":{%s,\"location\":{\"latitude\":\"%s\",\"longitude\":\"%s\"},\"time\":\"%s\",%s,%s}}", deviceId, deviceType, rxbuff1, latitude, longitude, strftime_buf, rxbuff2, rxbuff3);
-        msg_id = esp_mqtt_client_publish(mqtt_client, "/topic/qos1", buff, 0, 1, 0);
+        msg_id = esp_mqtt_client_publish(mqtt_client, "/aqi", buff, 0, 2, 0);
+
         vTaskDelay(DelayMS / portTICK_PERIOD_MS);
     }
 }
@@ -321,9 +336,6 @@ void app_main(void)
     ESP_ERROR_CHECK(nvs_flash_init());
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
-
-    gpio_pad_select_gpio(2);
-    gpio_set_direction(2, GPIO_MODE_OUTPUT);
 
     // Connect to wifi
     ESP_ERROR_CHECK(example_connect());
